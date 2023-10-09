@@ -1,0 +1,33 @@
+{
+    "seconds": 3,
+    "metrics": [
+        {
+            "k_to_report": [5, 10],
+            "name": "MinFDEK",
+            "aggregators": [
+                {
+                    "name": "RowMean"
+                }
+            ]
+        },
+        {
+            "k_to_report": [5, 10],
+            "name": "MinADEK",
+            "aggregators": [
+                {
+                    "name": "RowMean"
+                }
+            ]
+        },
+        {
+            "k_to_report": [5, 10],
+            "name": "MissRateTopK",
+            "aggregators": [
+                {
+                    "name": "RowMean"
+                }
+            ],
+            "tolerance": 0.5 
+        }
+    ]
+}

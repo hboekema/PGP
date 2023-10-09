@@ -1,0 +1,33 @@
+{
+    "seconds": 3,
+    "metrics": [
+        {
+            "k_to_report": [5, 10],
+            "name": "MinFDEK",
+            "aggregators": [
+                {
+                    "name": "Identity"
+                }
+            ]
+        },
+        {
+            "k_to_report": [5, 10],
+            "name": "MinADEK",
+            "aggregators": [
+                {
+                    "name": "Identity"
+                }
+            ]
+        },
+        {
+            "k_to_report": [5, 10],
+            "name": "MissRateTopK",
+            "aggregators": [
+                {
+                    "name": "Identity"
+                }
+            ],
+            "tolerance": 0.5 
+        }
+    ]
+}
