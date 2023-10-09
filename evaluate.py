@@ -125,7 +125,7 @@ seed_metrics = {}
 evaluator = Evaluator(
     cfg, metrics_cfg, test_set, args.output_dir, args.checkpoint, visualizer
 )
-evaluator.visualize(args.output_dir)
+evaluator.visualize()
 
 
 for n, seed in enumerate(seeds):
