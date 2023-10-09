@@ -123,7 +123,7 @@ seeds = np.arange(0, 10)
 seed_metrics = {}
 
 evaluator = Evaluator(
-    cfg, metrics_cfg, test_set, args.checkpoint, visualizer
+    cfg, metrics_cfg, test_set, args.output_dir, args.checkpoint, visualizer
 )
 evaluator.visualize(args.output_dir)
 
@@ -135,7 +135,7 @@ for n, seed in enumerate(seeds):
     torch.manual_seed(seed)
 
     # Evaluate
-    metrics, tokens = evaluator.evaluate(output_dir=args.output_dir)
+    metrics, tokens = evaluator.evaluate()
     class_metrics = get_metrics_by_class(metrics, tokens)
 
     # metrics_stats = get_class_metric_stats(class_metrics, ["mean", "std"])
