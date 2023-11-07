@@ -1,6 +1,7 @@
-dataset: 'nuScenes'
+dataset: 'VOD'
+#mode: 'vod'
+mode: 'nuscenes'
 version: 'v1.0-trainval'
-#version: 'v1.0-mini'
 agent_setting: 'single_agent'
 input_representation: 'graphs'
 
@@ -21,15 +22,6 @@ train_set_args:
   traversal_horizon: 15
 
 val_set_args:
-  split: 'train_val'
-  t_h: *t_h
-  t_f: *t_f
-  map_extent: *map_extent 
-  polyline_resolution: 1
-  polyline_length: 20
-  traversal_horizon: 15
-
-test_set_args:
   split: 'val'
   t_h: *t_h
   t_f: *t_f
@@ -38,6 +30,27 @@ test_set_args:
   polyline_length: 20
   traversal_horizon: 15
 
+test_set_args:
+  split: 'test'
+  t_h: *t_h
+  t_f: *t_f
+  map_extent: *map_extent 
+  polyline_resolution: 1
+  polyline_length: 20
+  traversal_horizon: 15
+
+vis_set_args:
+  split: 'visualisation'
+  t_h: *t_h
+  t_f: *t_f
+  map_extent: *map_extent 
+  polyline_resolution: 1
+  polyline_length: 20
+  traversal_horizon: 15
+
 batch_size: 32
-num_workers: 24
+#num_workers: 24
+num_workers: 20
+#num_workers: 12
+#num_workers: 0
 verbosity: True

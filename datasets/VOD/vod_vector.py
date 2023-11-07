@@ -1,43 +1,47 @@
 import os
 import pickle
+from collections import defaultdict
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
-from datasets.nuScenes.nuScenes import NuScenesTrajectories
-from nuscenes.eval.common.utils import quaternion_yaw
-from nuscenes.map_expansion.map_api import NuScenesMap
-from nuscenes.prediction import PredictHelper
-from nuscenes.prediction.input_representation.static_layers import correct_yaw
+from datasets.VOD.vod_traj import VODTrajectories
 from pyquaternion import Quaternion
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
+from vod.eval.common.utils import quaternion_yaw
+from vod.map_expansion.map_api import VODMap
+from vod.prediction import PredictHelper
+from vod.prediction.input_representation.static_layers import correct_yaw
 
 
-class NuScenesVector(NuScenesTrajectories):
+class VODVector(VODTrajectories):
     """
-    NuScenes dataset class for single agent prediction, using the vector representation for maps and agents
+    VOD dataset class for single agent prediction, using the vector representation for maps and agents
     """
 
-    def __init__(self, mode: str, data_dir: str, args: Dict, helper: PredictHelper):
+    def __init__(
+        self,
+        mode: str,
+        data_dir: str,
+        args: Dict,
+        helper: PredictHelper,
+        output_mode: str = "vod",
+    ):
         """
         Initialize predict helper, agent and scene representations
         :param mode: Mode of operation of dataset, one of {'compute_stats', 'extract_data', 'load_data'}
         :param data_dir: Directory to store extracted pre-processed data
-        :param helper: NuScenes PredictHelper
+        :param helper: VOD PredictHelper
         :param args: Dataset arguments
         """
-        super().__init__(mode, data_dir, args, helper)
+        super().__init__(mode, data_dir, args, helper, output_mode)
 
+        # Initialize helper and map
         # Initialize helper and maps
-        self.map_locs = [
-            "singapore-onenorth",
-            "singapore-hollandvillage",
-            "singapore-queenstown",
-            "boston-seaport",
-        ]
+        self.map_locs = ["delft"]
         self.maps = {
-            i: NuScenesMap(map_name=i, dataroot=self.helper.data.dataroot)
+            i: VODMap(map_name=i, dataroot=self.helper.data.dataroot)
             for i in self.map_locs
         }
 
@@ -50,24 +54,35 @@ class NuScenesVector(NuScenesTrajectories):
         if self.mode == "extract_data":
             stats = self.load_stats()
             self.max_nodes = stats["num_lane_nodes"]
-            self.max_vehicles = stats["num_vehicles"]
-            self.max_pedestrians = stats["num_pedestrians"]
+            for agent_type in self.agent_types:
+                setattr(self, "max_" + agent_type, stats["num_" + agent_type])
 
         # Whether to add random flips for data augmentation
         elif self.mode == "load_data":
             self.random_flips = args["random_flips"]
+
+        self.freq = 10
+
+        self.class_encodings = {
+            "human.pedestrian.adult": 0,
+            "vehicle.bicycle": 1,
+            "vehicle.car": 2,
+            "vehicle.motorcycle": 3,
+        }
 
     def compute_stats(self, idx: int) -> Dict[str, int]:
         """
         Function to compute statistics for a given data point
         """
         num_lane_nodes = self.get_map_representation(idx)
-        num_vehicles, num_pedestrians = self.get_surrounding_agent_representation(idx)
+        num_agents_by_type = self.get_surrounding_agent_representation(
+            idx, self.agent_types
+        )
         stats = {
-            "num_lane_nodes": num_lane_nodes,
-            "num_vehicles": num_vehicles,
-            "num_pedestrians": num_pedestrians,
+            "num_" + self.agent_types[i]: num_agents_by_type[i]
+            for i in range(len(self.agent_types))
         }
+        stats["num_lane_nodes"] = num_lane_nodes
 
         return stats
 
@@ -87,20 +102,22 @@ class NuScenesVector(NuScenesTrajectories):
         """
         Extracts target agent representation
         :param idx: data index
-        :return hist: track history for target agent, shape: [t_h * 2, 5]
+        :return hist: track history for target agent, shape: [t_h * freq, 5]
         """
         i_t, s_t = self.token_list[idx].split("_")
+        instance = self.helper.data.get("instance", i_t)
+        category = self.helper.data.get("category", instance["category_token"])
+        agent_type = category["name"]
+        if agent_type == "vehicle.ego":
+            agent_type = "vehicle.car"
 
         # x, y co-ordinates in agent's frame of reference
         hist = self.helper.get_past_for_agent(
-            i_t, s_t, seconds=int(self.freq * self.t_h), in_agent_frame=True
-        )  # to avoid too few samples from being returned
-
-        if len(hist) > self.ts_h:
-            hist = hist[: self.ts_h]
+            i_t, s_t, seconds=self.t_h, in_agent_frame=True
+        )
 
         # Zero pad for track histories shorter than t_h
-        hist_zeropadded = np.zeros((self.ts_h + 1, 2))
+        hist_zeropadded = np.zeros((int(self.t_h * self.freq) + 1, 2))
 
         # Flip to have correct order of timestamps
         hist = np.flip(hist, 0)
@@ -110,6 +127,13 @@ class NuScenesVector(NuScenesTrajectories):
         # Get velocity, acc and yaw_rate over past t_h sec
         motion_states = self.get_past_motion_states(i_t, s_t)
         hist = np.concatenate((hist, motion_states), axis=1)
+
+        # Encode class information
+        class_idx = self.class_encodings[agent_type]
+        class_encoding = np.zeros((hist.shape[0], len(self.class_encodings)))
+        class_encoding[:, class_idx] = 1
+
+        hist = np.concatenate((hist, class_encoding), axis=-1)
 
         return hist
 
@@ -160,7 +184,7 @@ class NuScenesVector(NuScenesTrajectories):
         return map_representation
 
     def get_surrounding_agent_representation(
-        self, idx: int
+        self, idx: int, agent_types: List[str]
     ) -> Union[Tuple[int, int], Dict]:
         """
         Extracts surrounding agent representation
@@ -168,32 +192,38 @@ class NuScenesVector(NuScenesTrajectories):
         :return: ndarrays with surrounding pedestrian and vehicle track histories and masks for non-existent agents
         """
 
-        # Get vehicles and pedestrian histories for current sample
-        vehicles = self.get_agents_of_type(idx, "vehicle")
-        pedestrians = self.get_agents_of_type(idx, "human")
+        # Get agent histories for current sample
+        agents_dict = defaultdict(list)
+        for agent_type in agent_types:
+            agents = self.get_agents_of_type(idx, agent_type)
 
-        # Discard poses outside map extent
-        vehicles = self.discard_poses_outside_extent(vehicles)
-        pedestrians = self.discard_poses_outside_extent(pedestrians)
+            # Discard poses outside map extent
+            agents = self.discard_poses_outside_extent(agents)
+
+            if agent_type == "vehicle.car":
+                # lookup ego-vehicle and add to agents lise
+                ego_veh = self.get_agents_of_type(idx, "vehicle.ego")
+                ego_veh = self.discard_poses_outside_extent(ego_veh)
+                agents.extend(ego_veh)
+
+            agents_dict[agent_type] = agents
 
         # While running the dataset class in 'compute_stats' mode:
         if self.mode == "compute_stats":
-            return len(vehicles), len(pedestrians)
+            return tuple(len(agents) for agent_type, agents in agents_dict.items())
 
         # Convert to fixed size arrays for batching
-        vehicles, vehicle_masks = self.list_to_tensor(
-            vehicles, self.max_vehicles, self.ts_h + 1, 5
-        )
-        pedestrians, pedestrian_masks = self.list_to_tensor(
-            pedestrians, self.max_pedestrians, self.ts_h + 1, 5
-        )
+        surrounding_agent_representation = {}
+        for agent_type, agents in agents_dict.items():
+            agents, agent_masks = self.list_to_tensor(
+                agents,
+                getattr(self, "max_" + agent_type),
+                int(self.t_h * self.freq) + 1,
+                5,
+            )
 
-        surrounding_agent_representation = {
-            "vehicles": vehicles,
-            "vehicle_masks": vehicle_masks,
-            "pedestrians": pedestrians,
-            "pedestrian_masks": pedestrian_masks,
-        }
+            surrounding_agent_representation[agent_type] = agents
+            surrounding_agent_representation[agent_type + "_masks"] = agent_masks
 
         return surrounding_agent_representation
 
@@ -213,12 +243,12 @@ class NuScenesVector(NuScenesTrajectories):
         return global_pose
 
     def get_lanes_around_agent(
-        self, global_pose: Tuple[float, float, float], map_api: NuScenesMap
+        self, global_pose: Tuple[float, float, float], map_api: VODMap
     ) -> Dict:
         """
         Gets lane polylines around the target agent
         :param global_pose: (x, y, yaw) or target agent in global co-ordinates
-        :param map_api: nuScenes map api
+        :param map_api: VOD map api
         :return lanes: Dictionary of lane polylines
         """
         x, y, _ = global_pose
@@ -230,24 +260,30 @@ class NuScenesVector(NuScenesTrajectories):
         return lanes
 
     def get_polygons_around_agent(
-        self, global_pose: Tuple[float, float, float], map_api: NuScenesMap
+        self, global_pose: Tuple[float, float, float], map_api: VODMap
     ) -> Dict:
         """
         Gets polygon layers around the target agent e.g. crosswalks, stop lines
         :param global_pose: (x, y, yaw) or target agent in global co-ordinates
-        :param map_api: nuScenes map api
+        :param map_api: VOD map api
         :return polygons: Dictionary of polygon layers, each type as a list of shapely Polygons
         """
         x, y, _ = global_pose
         radius = max(self.map_extent)
         record_tokens = map_api.get_records_in_radius(
-            x, y, radius, ["stop_line", "ped_crossing"]
+            # x, y, radius, ["stop_line", "ped_crossing"]
+            x,
+            y,
+            radius,
+            ["ped_crossing"],
         )
         polygons = {k: [] for k in record_tokens.keys()}
         for k, v in record_tokens.items():
             for record_token in v:
                 polygon_token = map_api.get(k, record_token)["polygon_token"]
                 polygons[k].append(map_api.extract_polygon(polygon_token))
+        # polygons = {}
+        polygons["stop_line"] = []
 
         return polygons
 
@@ -400,16 +436,12 @@ class NuScenesVector(NuScenesTrajectories):
         """
         Returns past motion states: v, a, yaw_rate for a given instance and sample token over self.t_h seconds
         """
-        motion_states = np.zeros((self.ts_h + 1, 3))
+        motion_states = np.zeros((int(self.freq * self.t_h) + 1, 3))
         motion_states[-1, 0] = self.helper.get_velocity_for_agent(i_t, s_t)
         motion_states[-1, 1] = self.helper.get_acceleration_for_agent(i_t, s_t)
         motion_states[-1, 2] = self.helper.get_heading_change_rate_for_agent(i_t, s_t)
         hist = self.helper.get_past_for_agent(
-            i_t,
-            s_t,
-            seconds=int(self.freq * self.t_h),
-            in_agent_frame=True,
-            just_xy=False,
+            i_t, s_t, seconds=self.t_h, in_agent_frame=True, just_xy=False
         )
 
         for k in range(len(hist)):
@@ -527,13 +559,18 @@ class NuScenesVector(NuScenesTrajectories):
         feat_array = np.zeros((max_num, max_len, feat_size))
         mask_array = np.ones((max_num, max_len, feat_size))
         for n, feats in enumerate(feat_list):
+            if n >= max_num or len(feats) > max_len:  # TODO remove
+                # print(max_num, max_len)
+                # print(n, len(feats))
+                # print()
+                continue
             feat_array[n, : len(feats), :] = feats
             mask_array[n, : len(feats), :] = 0
+            # print(n, len(feats), len(feat_array))
 
         return feat_array, mask_array
 
-    @staticmethod
-    def flip_horizontal(data: Dict):
+    def flip_horizontal(self, data: Dict):
         """
         Helper function to randomly flip some samples across y-axis for data augmentation
         :param data: Dictionary with inputs and ground truth values.
@@ -552,15 +589,11 @@ class NuScenesVector(NuScenesTrajectories):
         data["inputs"]["map_representation"]["lane_node_feats"] = lf
 
         # Flip surrounding agents
-        vehicles = data["inputs"]["surrounding_agent_representation"]["vehicles"]
-        vehicles[:, :, 0] = -vehicles[:, :, 0]  # x-coord
-        vehicles[:, :, 4] = -vehicles[:, :, 4]  # yaw-rate
-        data["inputs"]["surrounding_agent_representation"]["vehicles"] = vehicles
-
-        peds = data["inputs"]["surrounding_agent_representation"]["pedestrians"]
-        peds[:, :, 0] = -peds[:, :, 0]  # x-coord
-        peds[:, :, 4] = -peds[:, :, 4]  # yaw-rate
-        data["inputs"]["surrounding_agent_representation"]["pedestrians"] = peds
+        for agent_type in self.agent_types:
+            agents = data["inputs"]["surrounding_agent_representation"][agent_type]
+            agents[:, :, 0] = -agents[:, :, 0]  # x-coord
+            agents[:, :, 4] = -agents[:, :, 4]  # yaw-rate
+            data["inputs"]["surrounding_agent_representation"][agent_type] = agents
 
         # Flip groud truth trajectory
         fut = data["ground_truth"]["traj"]

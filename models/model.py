@@ -1,18 +1,24 @@
+from typing import Dict, Union
+
 import torch
 import torch.nn as nn
-import models.encoders.encoder as enc
+
 import models.aggregators.aggregator as agg
 import models.decoders.decoder as dec
-from typing import Dict, Union
+import models.encoders.encoder as enc
 
 
 class PredictionModel(nn.Module):
     """
     Single-agent prediction model
     """
-    def __init__(self, encoder: enc.PredictionEncoder,
-                 aggregator: agg.PredictionAggregator,
-                 decoder: dec.PredictionDecoder):
+
+    def __init__(
+        self,
+        encoder: enc.PredictionEncoder,
+        aggregator: agg.PredictionAggregator,
+        decoder: dec.PredictionDecoder,
+    ):
         """
         Initializes model for single-agent trajectory prediction
         """

@@ -1,13 +1,17 @@
-from datasets.interface import TrajectoryDataset
-import torch.utils.data as torch_data
-from typing import List, Dict
-import torch
 import os
 import pickle
+from typing import Dict, List
+
+import torch
+import torch.utils.data as torch_data
+from datasets.interface import TrajectoryDataset
+
 from train_eval.initialization import get_specific_args, initialize_dataset
 
 
-def preprocess_data(cfg: Dict, data_root: str, data_dir: str, compute_stats=True, extract=True):
+def preprocess_data(
+    cfg: Dict, data_root: str, data_dir: str, compute_stats=True, extract=True
+):
     """
     Main function for pre-processing data
 
@@ -19,28 +23,84 @@ def preprocess_data(cfg: Dict, data_root: str, data_dir: str, compute_stats=True
     """
 
     # String describing dataset type
-    ds_type = cfg['dataset'] + '_' + cfg['agent_setting'] + '_' + cfg['input_representation']
+    ds_type = (
+        cfg["dataset"] + "_" + cfg["agent_setting"] + "_" + cfg["input_representation"]
+    )
 
     # Get dataset specific args
-    specific_args = get_specific_args(cfg['dataset'], data_root, cfg['version'] if 'version' in cfg.keys() else None)
+    train_specific_args = get_specific_args(
+        cfg["dataset"],
+        data_root,
+        cfg["version"] if "version" in cfg.keys() else None,
+        cfg,
+    )
+    if cfg["dataset"] == "VOD":
+        test_specific_args = get_specific_args(
+            cfg["dataset"], data_root, "v1.0-test", cfg
+        )
+    else:
+        test_specific_args = train_specific_args
+
+    vis_specific_args = get_specific_args(
+        cfg["dataset"], data_root, "v1.0-visualisation", cfg
+    )
 
     # Compute stats
     if compute_stats:
-        train_set = initialize_dataset(ds_type, ['compute_stats', data_dir, cfg['train_set_args']] + specific_args)
-        val_set = initialize_dataset(ds_type, ['compute_stats', data_dir, cfg['val_set_args']] + specific_args)
-        test_set = initialize_dataset(ds_type, ['compute_stats', data_dir, cfg['test_set_args']] + specific_args)
-        compute_dataset_stats([train_set, val_set, test_set], cfg['batch_size'], cfg['num_workers'],
-                              verbose=cfg['verbosity'])
+        train_set = initialize_dataset(
+            ds_type,
+            ["compute_stats", data_dir, cfg["train_set_args"]] + train_specific_args,
+        )
+        val_set = initialize_dataset(
+            ds_type,
+            ["compute_stats", data_dir, cfg["val_set_args"]] + train_specific_args,
+        )
+        test_set = initialize_dataset(
+            ds_type,
+            ["compute_stats", data_dir, cfg["test_set_args"]] + test_specific_args,
+        )
+        compute_dataset_stats(
+            [train_set, val_set, test_set],
+            cfg["batch_size"],
+            cfg["num_workers"],
+            verbose=cfg["verbosity"],
+        )
 
     # Extract data
     if extract:
-        train_set = initialize_dataset(ds_type, ['extract_data', data_dir, cfg['train_set_args']] + specific_args)
-        val_set = initialize_dataset(ds_type, ['extract_data', data_dir, cfg['val_set_args']] + specific_args)
-        test_set = initialize_dataset(ds_type, ['extract_data', data_dir, cfg['test_set_args']] + specific_args)
-        extract_data([train_set, val_set, test_set], cfg['batch_size'], cfg['num_workers'], verbose=cfg['verbosity'])
+        train_set = initialize_dataset(
+            ds_type,
+            ["extract_data", data_dir, cfg["train_set_args"]] + train_specific_args,
+        )
+        val_set = initialize_dataset(
+            ds_type,
+            ["extract_data", data_dir, cfg["val_set_args"]] + train_specific_args,
+        )
+        test_set = initialize_dataset(
+            ds_type,
+            ["extract_data", data_dir, cfg["test_set_args"]] + test_specific_args,
+        )
+
+        vis_set = initialize_dataset(
+            ds_type,
+            ["extract_data", data_dir, cfg["vis_set_args"]] + vis_specific_args,
+        )
+
+        extract_data(
+            # [train_set, val_set, test_set],
+            [vis_set],
+            cfg["batch_size"],
+            cfg["num_workers"],
+            verbose=cfg["verbosity"],
+        )
 
 
-def compute_dataset_stats(dataset_splits: List[TrajectoryDataset], batch_size: int, num_workers: int, verbose=False):
+def compute_dataset_stats(
+    dataset_splits: List[TrajectoryDataset],
+    batch_size: int,
+    num_workers: int,
+    verbose=False,
+):
     """
     Computes dataset stats
 
@@ -51,13 +111,15 @@ def compute_dataset_stats(dataset_splits: List[TrajectoryDataset], batch_size: i
     """
     # Check if all datasets have been initialized with the correct mode
     for dataset in dataset_splits:
-        if dataset.mode != 'compute_stats':
-            raise Exception('Dataset mode should be compute_stats')
+        if dataset.mode != "compute_stats":
+            raise Exception("Dataset mode should be compute_stats")
 
     # Initialize data loaders
     data_loaders = []
     for dataset in dataset_splits:
-        dl = torch_data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        dl = torch_data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        )
         data_loaders.append(dl)
 
     # Initialize dataset statistics
@@ -79,16 +141,26 @@ def compute_dataset_stats(dataset_splits: List[TrajectoryDataset], batch_size: i
 
             # Show progress
             if verbose:
-                print("mini batch " + str(mini_batch_count + 1) + '/' + str(num_mini_batches))
+                print(
+                    "mini batch "
+                    + str(mini_batch_count + 1)
+                    + "/"
+                    + str(num_mini_batches)
+                )
                 mini_batch_count += 1
 
     # Save stats
-    filename = os.path.join(dataset_splits[0].data_dir, 'stats.pickle')
-    with open(filename, 'wb') as handle:
+    filename = os.path.join(dataset_splits[0].data_dir, "stats.pickle")
+    with open(filename, "wb") as handle:
         pickle.dump(stats, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def extract_data(dataset_splits: List[TrajectoryDataset], batch_size: int, num_workers: int, verbose=False):
+def extract_data(
+    dataset_splits: List[TrajectoryDataset],
+    batch_size: int,
+    num_workers: int,
+    verbose=False,
+):
     """
     Extracts pre-processed data
 
@@ -99,13 +171,15 @@ def extract_data(dataset_splits: List[TrajectoryDataset], batch_size: int, num_w
     """
     # Check if all datasets have been initialized with the correct mode
     for dataset in dataset_splits:
-        if dataset.mode != 'extract_data':
-            raise Exception('Dataset mode should be extract_data')
+        if dataset.mode != "extract_data":
+            raise Exception("Dataset mode should be extract_data")
 
     # Initialize data loaders
     data_loaders = []
     for dataset in dataset_splits:
-        dl = torch_data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        dl = torch_data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        )
         data_loaders.append(dl)
 
     # For printing progress
@@ -119,5 +193,10 @@ def extract_data(dataset_splits: List[TrajectoryDataset], batch_size: int, num_w
 
             # Show progress
             if verbose:
-                print("mini batch " + str(mini_batch_count + 1) + '/' + str(num_mini_batches))
+                print(
+                    "mini batch "
+                    + str(mini_batch_count + 1)
+                    + "/"
+                    + str(num_mini_batches)
+                )
                 mini_batch_count += 1

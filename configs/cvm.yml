@@ -1,0 +1,88 @@
+# Dataset and dataloader parameters
+dataset: 'VOD'
+mode: "vod"
+version: 'v1.0-trainval'
+agent_setting: 'single_agent'
+input_representation: 'graphs'
+
+#define: &t_h 1
+define: &t_h 0.5
+#define: &t_f 2
+define: &t_f 3
+
+train_set_args: &ds_args
+  split: 'train'
+  t_h: *t_h 
+  t_f: *t_f
+  map_extent: [ -20, 20, -10, 40 ]
+  polyline_resolution: 1
+  polyline_length: 20
+  traversal_horizon: 15
+  #random_flips: True
+  random_flips: False
+
+val_set_args:
+  <<: *ds_args
+  split: 'val'
+  random_flips: False
+
+test_set_args:
+  <<: *ds_args
+  split: 'test'
+  random_flips: False
+
+batch_size: 32
+num_workers: 8
+
+
+# Encoder parameters
+encoder_type: 'cvm'
+encoder_args:
+
+# Aggregator parameters
+aggregator_type: 'identity'
+aggregator_args:
+
+
+# Decoder parameters
+decoder_type: 'cvm'
+decoder_args:
+  op_len: 30
+  k: 10
+
+
+# Optimizer parameters
+optim_args:
+  #lr: 0.001
+  lr: 0.0001
+  #scheduler_step: 10
+  scheduler_step: 100000
+  #scheduler_gamma: 0.5
+  scheduler_gamma: 1.
+
+
+losses: ['min_ade_k']
+loss_weights: [1]
+loss_args:
+  - k: 10
+
+
+tr_metrics: ['min_ade_k', 'miss_rate_k']
+tr_metric_args:
+  - k: 10
+  - k: 10
+    dist_thresh: 0.5
+
+val_metrics: ['min_ade_k','min_ade_k', 'min_fde_k','min_fde_k','miss_rate_k', 'miss_rate_k']
+val_metric_args:
+  - k: 5
+  - k: 10
+  - k: 5
+  - k: 10
+  - k: 5
+    dist_thresh: 0.5
+  - k: 10
+    dist_thresh: 0.5
+
+
+log_freq: 10 

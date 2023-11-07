@@ -9,7 +9,7 @@ from nuscenes.eval.prediction.splits import get_prediction_challenge_split
 from nuscenes.prediction import PredictHelper
 
 
-class NuScenesTrajectories(SingleAgentDataset):
+class NuScenesTrajectories10Hz(SingleAgentDataset):
     """
     NuScenes dataset class for single agent prediction
     """
@@ -34,9 +34,13 @@ class NuScenesTrajectories(SingleAgentDataset):
         self.t_h = args["t_h"]
         self.t_f = args["t_f"]
 
-        self.freq = 2  # Hz
-        self.ts_h = self.freq * int(self.t_h)  # TODO fix
-        self.ts_f = self.freq * int(self.t_f)  # TODO fix
+        self.freq = 10  # Hz
+        self.ts_h = int(self.freq * self.t_h)
+        self.ts_f = int(self.freq * self.t_f)
+
+        self.max_t = 100
+
+        self.data = self.helper.data
 
     def __len__(self):
         """
@@ -56,7 +60,8 @@ class NuScenesTrajectories(SingleAgentDataset):
             idx
         )
         target_agent_representation = self.get_target_agent_representation(idx)
-        print(target_agent_representation.shape)
+
+        assert len(target_agent_representation) == self.ts_h + 1
         inputs = {
             "instance_token": i_t,
             "sample_token": s_t,
@@ -104,12 +109,12 @@ class NuScenesTrajectories(SingleAgentDataset):
 
         # print("inputs")
         # for key, value in data["inputs"].items():
-        #    if isinstance(value, np.ndarray):
-        #        print(key, value.shape)
+        #     if isinstance(value, np.ndarray):
+        #         print(key, value.shape)
         # print("ground_truth")
         # for key, value in data["ground_truth"].items():
-        #    if isinstance(value, np.ndarray):
-        #        print(key, value.shape)
+        #     if isinstance(value, np.ndarray):
+        #         print(key, value.shape)
 
         return data
 
@@ -117,13 +122,14 @@ class NuScenesTrajectories(SingleAgentDataset):
         """
         Extracts future trajectory for target agent
         :param idx: data index
-        :return fut: future trajectory for target agent, shape: [t_f * 2, 2]
+        :return fut: future trajectory for target agent, shape: [t_f * freq, 2]
         """
         i_t, s_t = self.token_list[idx].split("_")
-        fut = self.helper.get_future_for_agent(
-            i_t, s_t, seconds=self.t_f, in_agent_frame=True
-        )
+        _, fut = self.upsample_track(i_t, s_t)
+        if len(fut) > self.ts_f:
+            fut = fut[: self.ts_f]
 
+        assert len(fut) == self.ts_f
         return fut
 
     @abc.abstractmethod

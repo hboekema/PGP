@@ -9,7 +9,7 @@ from models.decoders.utils import cluster_traj
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class LVM(PredictionDecoder):
+class LVM_CA(PredictionDecoder):
     def __init__(self, args):
         """
         Latent variable conditioned decoder.
@@ -30,7 +30,7 @@ class LVM(PredictionDecoder):
         self.op_len = args["op_len"]
         self.lv_dim = args["lv_dim"]
         self.hidden = nn.Linear(
-            args["encoding_size"] + args["lv_dim"], args["hidden_size"]
+            args["encoding_size"] + args["lv_dim"] + args["nbr_agent_types"], args["hidden_size"]
         )
         self.op_traj = nn.Linear(args["hidden_size"], args["op_len"] * 2)
         self.leaky_relu = nn.LeakyReLU()
@@ -67,7 +67,8 @@ class LVM(PredictionDecoder):
         # Sample latent variable and concatenate with aggregated encoding
         batch_size = agg_encoding.shape[0]
         z = torch.randn(batch_size, self.num_samples, self.lv_dim, device=device)
-        agg_encoding = torch.cat((agg_encoding, z), dim=2)
+        class_enc = inputs["class_encoding"][:, None].repeat(1, self.num_samples, 1)
+        agg_encoding = torch.cat((agg_encoding, z, class_enc), dim=2)
         h = self.leaky_relu(self.hidden(agg_encoding))
 
         # Output trajectories

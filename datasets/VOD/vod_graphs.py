@@ -2,27 +2,34 @@ from typing import Dict, List, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-from datasets.nuScenes.nuScenes_vector import NuScenesVector
-from nuscenes.map_expansion.map_api import NuScenesMap
-from nuscenes.prediction import PredictHelper
-from nuscenes.prediction.input_representation.static_layers import color_by_yaw
+from datasets.VOD.vod_vector import VODVector
 from scipy.spatial.distance import cdist
+from vod.map_expansion.map_api import VODMap
+from vod.prediction import PredictHelper
+from vod.prediction.input_representation.static_layers import color_by_yaw
 
 
-class NuScenesGraphs(NuScenesVector):
+class VODGraphs(VODVector):
     """
-    NuScenes dataset class for single agent prediction, using the graph representation from PGP for maps and agents
+    VOD dataset class for single agent prediction, using the graph representation from PGP for maps and agents
     """
 
-    def __init__(self, mode: str, data_dir: str, args: Dict, helper: PredictHelper):
+    def __init__(
+        self,
+        mode: str,
+        data_dir: str,
+        args: Dict,
+        helper: PredictHelper,
+        output_mode: str = "vod",
+    ):
         """
         Initialize predict helper, agent and scene representations
         :param mode: Mode of operation of dataset, one of {'compute_stats', 'extract_data', 'load_data'}
         :param data_dir: Directory to store extracted pre-processed data
-        :param helper: NuScenes PredictHelper
+        :param helper: VOD PredictHelper
         :param args: Dataset arguments
         """
-        super().__init__(mode, data_dir, args, helper)
+        super().__init__(mode, data_dir, args, helper, output_mode)
         self.traversal_horizon = args["traversal_horizon"]
 
         # Load dataset stats (max nodes, max agents etc.)
@@ -35,13 +42,15 @@ class NuScenesGraphs(NuScenesVector):
         Function to compute statistics for a given data point
         """
         num_lane_nodes, max_nbr_nodes = self.get_map_representation(idx)
-        num_vehicles, num_pedestrians = self.get_surrounding_agent_representation(idx)
+        num_agents_by_type = self.get_surrounding_agent_representation(
+            idx, self.agent_types
+        )
         stats = {
-            "num_lane_nodes": num_lane_nodes,
-            "max_nbr_nodes": max_nbr_nodes,
-            "num_vehicles": num_vehicles,
-            "num_pedestrians": num_pedestrians,
+            "num_" + self.agent_types[i]: num_agents_by_type[i]
+            for i in range(len(self.agent_types))
         }
+        stats["num_lane_nodes"] = num_lane_nodes
+        stats["max_nbr_nodes"] = max_nbr_nodes
 
         return stats
 
@@ -109,7 +118,7 @@ class NuScenesGraphs(NuScenesVector):
         e_succ = self.get_successor_edges(lane_ids, map_api)
         e_prox = self.get_proximal_edges(lane_node_feats, e_succ)
 
-        # Concatentate flag indicating whether a node hassss successors to lane node feats
+        # Concatentate flag indicating whether a node has successors to lane node feats
         lane_node_feats = self.add_boundary_flag(e_succ, lane_node_feats)
 
         # Add dummy node (0, 0, 0, 0, 0, 0) if no lane nodes are found
@@ -128,6 +137,8 @@ class NuScenesGraphs(NuScenesVector):
             return num_nodes, max_nbrs
 
         # Get edge lookup tables
+        e_succ = e_succ[:self.max_nodes]
+        e_prox = e_prox[:self.max_nodes]
         s_next, edge_type = self.get_edge_lookup(e_succ, e_prox)
 
         # Convert list of lane node feats to fixed size numpy array and masks
@@ -145,9 +156,7 @@ class NuScenesGraphs(NuScenesVector):
         return map_representation
 
     @staticmethod
-    def get_successor_edges(
-        lane_ids: List[str], map_api: NuScenesMap
-    ) -> List[List[int]]:
+    def get_successor_edges(lane_ids: List[str], map_api: VODMap) -> List[List[int]]:
         """
         Returns successor edge list for each node
         """
@@ -433,38 +442,27 @@ class NuScenesGraphs(NuScenesVector):
 
         lane_node_feats = hd_map["lane_node_feats"]
         lane_node_masks = hd_map["lane_node_masks"]
-        vehicle_feats = agents["vehicles"]
-        vehicle_masks = agents["vehicle_masks"]
-        ped_feats = agents["pedestrians"]
-        ped_masks = agents["pedestrian_masks"]
+        agent_types = [name for name in agents.keys() if "masks" not in name]
+        agents = {name: (agents[name], agents[name + "_masks"]) for name in agent_types}
 
-        vehicle_node_masks = np.ones((len(lane_node_feats), len(vehicle_feats)))
-        ped_node_masks = np.ones((len(lane_node_feats), len(ped_feats)))
-
+        agent_node_masks_dict = {}
         for i, node_feat in enumerate(lane_node_feats):
             if (lane_node_masks[i] == 0).any():
                 node_pose_idcs = np.where(lane_node_masks[i][:, 0] == 0)[0]
                 node_locs = node_feat[node_pose_idcs, :2]
 
-                for j, vehicle_feat in enumerate(vehicle_feats):
-                    if (vehicle_masks[j] == 0).any():
-                        vehicle_loc = vehicle_feat[-1, :2]
-                        dist = np.min(np.linalg.norm(node_locs - vehicle_loc, axis=1))
-                        if dist <= dist_thresh:
-                            vehicle_node_masks[i, j] = 0
+                for agent_type, (agent_feats, agent_masks) in agents.items():
+                    agent_node_masks = np.ones((len(lane_node_feats), len(agent_feats)))
+                    for j, agent_feat in enumerate(agent_feats):
+                        if (agent_masks[j] == 0).any():
+                            agent_loc = agent_feat[-1, :2]
+                            dist = np.min(np.linalg.norm(node_locs - agent_loc, axis=1))
+                            if dist <= dist_thresh:
+                                agent_node_masks[i, j] = 0
 
-                for j, ped_feat in enumerate(ped_feats):
-                    if (ped_masks[j] == 0).any():
-                        ped_loc = ped_feat[-1, :2]
-                        dist = np.min(np.linalg.norm(node_locs - ped_loc, axis=1))
-                        if dist <= dist_thresh:
-                            ped_node_masks[i, j] = 0
+                    agent_node_masks_dict[agent_type] = agent_node_masks
 
-        agent_node_masks = {
-            "vehicles": vehicle_node_masks,
-            "pedestrians": ped_node_masks,
-        }
-        return agent_node_masks
+        return agent_node_masks_dict
 
     def visualize_graph(self, node_feats, s_next, edge_type, evf_gt, node_seq, fut_xy):
         """

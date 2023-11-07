@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pack_padded_sequence
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class PGPEncoder(PredictionEncoder):
+class PGPVODEncoder(PredictionEncoder):
     def __init__(self, args: Dict):
         """
         GRU based encoder from PGP. Lane node features and agent histories encoded using GRUs.
@@ -34,6 +34,8 @@ class PGPEncoder(PredictionEncoder):
         """
 
         super().__init__()
+
+        self.target_agent_feat_size = args["target_agent_feat_size"]
 
         # Target agent encoder
         self.target_agent_emb = nn.Linear(
@@ -106,6 +108,7 @@ class PGPEncoder(PredictionEncoder):
 
         # Encode target agent
         target_agent_feats = inputs["target_agent_representation"]
+        target_agent_feats = target_agent_feats[..., : self.target_agent_feat_size]
         target_agent_embedding = self.leaky_relu(
             self.target_agent_emb(target_agent_feats)
         )
@@ -121,21 +124,38 @@ class PGPEncoder(PredictionEncoder):
         )
 
         # Encode surrounding agents
-        nbr_vehicle_feats = inputs["surrounding_agent_representation"]["vehicles"]
+        cars = inputs["surrounding_agent_representation"]["vehicle.car"]
+        motorcycles = inputs["surrounding_agent_representation"]["vehicle.motorcycle"]
+        bicycles = inputs["surrounding_agent_representation"]["vehicle.bicycle"]
+        nbr_vehicle_feats = torch.cat((cars, motorcycles, bicycles), dim=1)
         nbr_vehicle_feats = torch.cat(
             (nbr_vehicle_feats, torch.zeros_like(nbr_vehicle_feats[:, :, :, 0:1])),
             dim=-1,
         )
-        nbr_vehicle_masks = inputs["surrounding_agent_representation"]["vehicle_masks"]
+        car_masks = inputs["surrounding_agent_representation"]["vehicle.car_masks"]
+        motorcycle_masks = inputs["surrounding_agent_representation"][
+            "vehicle.motorcycle_masks"
+        ]
+        bicycle_masks = inputs["surrounding_agent_representation"][
+            "vehicle.bicycle_masks"
+        ]
+        nbr_vehicle_masks = torch.cat(
+            (car_masks, motorcycle_masks, bicycle_masks), dim=1
+        )
         nbr_vehicle_embedding = self.leaky_relu(self.nbr_emb(nbr_vehicle_feats))
         nbr_vehicle_enc = self.variable_size_gru_encode(
             nbr_vehicle_embedding, nbr_vehicle_masks, self.nbr_enc
         )
-        nbr_ped_feats = inputs["surrounding_agent_representation"]["pedestrians"]
+
+        nbr_ped_feats = inputs["surrounding_agent_representation"][
+            "human.pedestrian.adult"
+        ]
         nbr_ped_feats = torch.cat(
             (nbr_ped_feats, torch.ones_like(nbr_ped_feats[:, :, :, 0:1])), dim=-1
         )
-        nbr_ped_masks = inputs["surrounding_agent_representation"]["pedestrian_masks"]
+        nbr_ped_masks = inputs["surrounding_agent_representation"][
+            "human.pedestrian.adult_masks"
+        ]
         nbr_ped_embedding = self.leaky_relu(self.nbr_emb(nbr_ped_feats))
         nbr_ped_enc = self.variable_size_gru_encode(
             nbr_ped_embedding, nbr_ped_masks, self.nbr_enc
@@ -146,17 +166,15 @@ class PGPEncoder(PredictionEncoder):
         queries = self.query_emb(lane_node_enc).permute(1, 0, 2)
         keys = self.key_emb(nbr_encodings).permute(1, 0, 2)
         vals = self.val_emb(nbr_encodings).permute(1, 0, 2)
-        # print(inputs["agent_node_masks"]["vehicles"].shape)
-        # print(inputs["agent_node_masks"]["pedestrians"].shape)
-        # exit()
         attn_masks = torch.cat(
             (
-                inputs["agent_node_masks"]["vehicles"],
-                inputs["agent_node_masks"]["pedestrians"],
+                inputs["agent_node_masks"]["vehicle.car"],
+                inputs["agent_node_masks"]["vehicle.motorcycle"],
+                inputs["agent_node_masks"]["vehicle.bicycle"],
+                inputs["agent_node_masks"]["human.pedestrian.adult"],
             ),
             dim=2,
         )
-        # print(queries.shape, keys.shape, vals.shape, attn_masks.shape)
         att_op, _ = self.a_n_att(queries, keys, vals, attn_mask=attn_masks)
         att_op = att_op.permute(1, 0, 2)
 

@@ -2,14 +2,14 @@ from typing import Dict, List, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-from datasets.nuScenes.nuScenes_vector import NuScenesVector
+from datasets.nuScenes10Hz.nuScenes_vector import NuScenesVector10Hz
 from nuscenes.map_expansion.map_api import NuScenesMap
 from nuscenes.prediction import PredictHelper
 from nuscenes.prediction.input_representation.static_layers import color_by_yaw
 from scipy.spatial.distance import cdist
 
 
-class NuScenesGraphs(NuScenesVector):
+class NuScenesGraphs10Hz(NuScenesVector10Hz):
     """
     NuScenes dataset class for single agent prediction, using the graph representation from PGP for maps and agents
     """

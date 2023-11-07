@@ -2,7 +2,7 @@
     "seconds": 3,
     "metrics": [
         {
-            "k_to_report": [5, 10],
+            "k_to_report": [1, 5, 10],
             "name": "MinFDEK",
             "aggregators": [
                 {
@@ -11,7 +11,7 @@
             ]
         },
         {
-            "k_to_report": [5, 10],
+            "k_to_report": [1, 5, 10],
             "name": "MinADEK",
             "aggregators": [
                 {
@@ -20,7 +20,7 @@
             ]
         },
         {
-            "k_to_report": [5, 10],
+            "k_to_report": [1, 5, 10],
             "name": "MissRateTopK",
             "aggregators": [
                 {

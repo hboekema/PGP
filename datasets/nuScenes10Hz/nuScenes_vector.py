@@ -4,7 +4,8 @@ from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
-from datasets.nuScenes.nuScenes import NuScenesTrajectories
+from datasets.nuScenes10Hz.nuScenes import NuScenesTrajectories10Hz
+from geometry_utils.interpolate import upsample1d, upsample2d
 from nuscenes.eval.common.utils import quaternion_yaw
 from nuscenes.map_expansion.map_api import NuScenesMap
 from nuscenes.prediction import PredictHelper
@@ -14,7 +15,7 @@ from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 
 
-class NuScenesVector(NuScenesTrajectories):
+class NuScenesVector10Hz(NuScenesTrajectories10Hz):
     """
     NuScenes dataset class for single agent prediction, using the vector representation for maps and agents
     """
@@ -83,32 +84,69 @@ class NuScenesVector(NuScenesTrajectories):
 
         return data
 
+    def upsample_track(self, i_t, s_t, factor=5, in_agent_frame=True):
+        hist = self.helper.get_past_for_agent(
+            i_t, s_t, seconds=self.max_t, in_agent_frame=in_agent_frame
+        )
+        len_h = len(hist)
+        hist = hist[::-1]  # flip to have correct order of timestamps
+        if in_agent_frame:
+            present = np.zeros((1, 2))
+        else:
+            annotation = self.helper.get_sample_annotation(i_t, s_t)
+            present = np.asarray(annotation["translation"][0:2]).reshape(1, 2)
+
+        # hist = np.concatenate([hist, present], axis=0)
+        fut = self.helper.get_future_for_agent(
+            i_t, s_t, seconds=self.max_t, in_agent_frame=in_agent_frame
+        )
+        len_f = len(fut)
+
+        if len_f > 0:
+            track = np.concatenate([hist, present, fut], axis=0)
+
+            track_upsampled = upsample2d(track, factor=factor)
+            hist_upsampled, fut_upsampled = (
+                track_upsampled[: len_h * 5],
+                track_upsampled[-len_f * 5 :],
+            )
+        else:
+            track = np.concatenate([hist, present], axis=0)
+
+            track_upsampled = upsample2d(track, factor=factor)
+            hist_upsampled = track_upsampled[: len(hist)]
+            fut_upsampled = None
+
+        return hist_upsampled, fut_upsampled
+
     def get_target_agent_representation(self, idx: int) -> np.ndarray:
         """
         Extracts target agent representation
         :param idx: data index
-        :return hist: track history for target agent, shape: [t_h * 2, 5]
+        :return hist: track history for target agent, shape: [t_h * freq, 5]
         """
         i_t, s_t = self.token_list[idx].split("_")
 
         # x, y co-ordinates in agent's frame of reference
-        hist = self.helper.get_past_for_agent(
-            i_t, s_t, seconds=int(self.freq * self.t_h), in_agent_frame=True
-        )  # to avoid too few samples from being returned
-
+        # hist = self.helper.get_past_for_agent(
+        #    i_t, s_t, seconds=int(self.freq * self.t_h), in_agent_frame=True
+        # )
+        hist, fut = self.upsample_track(i_t, s_t)
+        # print("hist ups:", hist)
         if len(hist) > self.ts_h:
-            hist = hist[: self.ts_h]
+            hist = hist[-self.ts_h :]
+        # print("hist cropped:", hist)
+        # exit()
 
         # Zero pad for track histories shorter than t_h
         hist_zeropadded = np.zeros((self.ts_h + 1, 2))
-
-        # Flip to have correct order of timestamps
-        hist = np.flip(hist, 0)
         hist_zeropadded[-hist.shape[0] - 1 : -1] = hist
         hist = hist_zeropadded
 
         # Get velocity, acc and yaw_rate over past t_h sec
-        motion_states = self.get_past_motion_states(i_t, s_t)
+        # print(hist.shape)
+        motion_states = self.get_past_motion_states(i_t, s_t, len(hist))
+        # print(motion_states.shape)
         hist = np.concatenate((hist, motion_states), axis=1)
 
         return hist
@@ -306,22 +344,9 @@ class NuScenesVector(NuScenesTrajectories):
         agent_details = self.helper.get_past_for_sample(
             s_t, seconds=self.t_h, in_agent_frame=False, just_xy=False
         )
-        agent_hist = self.helper.get_past_for_sample(
-            s_t, seconds=self.t_h, in_agent_frame=False, just_xy=True
-        )
 
-        # Add present time to agent histories
-        present_time = self.helper.get_annotations_for_sample(s_t)
-        for annotation in present_time:
-            ann_i_t = annotation["instance_token"]
-            if ann_i_t in agent_hist.keys():
-                present_pose = np.asarray(annotation["translation"][0:2]).reshape(1, 2)
-                if agent_hist[ann_i_t].any():
-                    agent_hist[ann_i_t] = np.concatenate(
-                        (present_pose, agent_hist[ann_i_t])
-                    )
-                else:
-                    agent_hist[ann_i_t] = present_pose
+        # print("agent_hist cropped:", agent_hist)
+        # exit()
 
         # Filter for agent type
         agent_list = []
@@ -332,8 +357,26 @@ class NuScenesVector(NuScenesTrajectories):
                 and agent_type in v[0]["category_name"]
                 and v[0]["instance_token"] != i_t
             ):
-                agent_list.append(agent_hist[k])
-                agent_i_ts.append(v[0]["instance_token"])
+                ann_i_t = v[0]["instance_token"]
+                agent_hist, _ = self.upsample_track(ann_i_t, s_t, in_agent_frame=False)
+                if len(agent_hist) > self.ts_h:
+                    agent_hist = agent_hist[-self.ts_h :]
+
+                # Add present time to agent histories
+                annotation = self.helper.get_sample_annotation(ann_i_t, s_t)
+                present_pose = np.asarray(annotation["translation"][0:2]).reshape(1, 2)
+                if len(agent_hist) > 0:
+                    try:
+                        agent_hist = np.concatenate((agent_hist, present_pose))
+                    except ValueError as e:
+                        print(present_pose.shape)
+                        print(agent_hist.shape)
+                        raise e
+                else:
+                    agent_hist = present_pose
+
+                agent_list.append(agent_hist)
+                agent_i_ts.append(ann_i_t)
 
         # Convert to target agent's frame of reference
         for agent in agent_list:
@@ -343,9 +386,9 @@ class NuScenesVector(NuScenesTrajectories):
 
         # Flip history to have most recent time stamp last and extract past motion states
         for n, agent in enumerate(agent_list):
-            xy = np.flip(agent, axis=0)
-            motion_states = self.get_past_motion_states(agent_i_ts[n], s_t)
-            motion_states = motion_states[-len(xy) :, :]
+            xy = agent
+            motion_states = self.get_past_motion_states(agent_i_ts[n], s_t, len(xy))
+            # motion_states = motion_states[-len(xy) :]
             agent_list[n] = np.concatenate((xy, motion_states), axis=1)
 
         return agent_list
@@ -396,7 +439,58 @@ class NuScenesVector(NuScenesTrajectories):
 
         return stats
 
-    def get_past_motion_states(self, i_t, s_t):
+    def get_past_motion_states(self, i_t, s_t, ts, factor=5):
+        past_anns = self.helper.get_past_for_agent(
+            i_t, s_t, seconds=self.max_t, in_agent_frame=False, just_xy=False
+        )
+        past_anns = past_anns[::-1]  # flip timestamps
+        # print("past_anns len", len(past_anns))
+        # print("hist len", len(hist))
+
+        velocities = np.zeros(ts)
+        accelerations = np.zeros(ts)
+        yaw_rates = np.zeros(ts)
+        for k, ann in enumerate(past_anns):
+            if k >= ts:
+                break
+
+            ann_s_t = ann["sample_token"]
+
+            velocity = self.helper.get_velocity_for_agent(i_t, ann_s_t)
+            velocities[-(k + 1)] = velocity
+
+            acceleration = self.helper.get_acceleration_for_agent(i_t, ann_s_t)
+            accelerations[-(k + 1)] = acceleration
+
+            yaw_rate = self.helper.get_heading_change_rate_for_agent(i_t, ann_s_t)
+            yaw_rates[-(k + 1)] = yaw_rate
+
+        velocities = np.nan_to_num(velocities)
+        accelerations = np.nan_to_num(accelerations)
+        yaw_rates = np.nan_to_num(yaw_rates)
+
+        if len(past_anns) > 1:
+            velocities_intp = upsample1d(velocities, factor=factor)
+            accelerations_intp = upsample1d(accelerations, factor=factor)
+            yaw_rates_intp = upsample1d(yaw_rates, factor=factor)
+        else:
+            velocities_intp = np.repeat(velocities, factor)
+            accelerations_intp = np.repeat(accelerations, factor)
+            yaw_rates_intp = np.repeat(yaw_rates, factor)
+
+        motion_states = np.concatenate(
+            [
+                velocities_intp[:, None],
+                accelerations_intp[:, None],
+                yaw_rates_intp[:, None],
+            ],
+            axis=1,
+        )
+
+        motion_states = motion_states[-ts:]
+        return motion_states
+
+    def _get_past_motion_states(self, i_t, s_t):
         """
         Returns past motion states: v, a, yaw_rate for a given instance and sample token over self.t_h seconds
         """
@@ -404,13 +498,10 @@ class NuScenesVector(NuScenesTrajectories):
         motion_states[-1, 0] = self.helper.get_velocity_for_agent(i_t, s_t)
         motion_states[-1, 1] = self.helper.get_acceleration_for_agent(i_t, s_t)
         motion_states[-1, 2] = self.helper.get_heading_change_rate_for_agent(i_t, s_t)
-        hist = self.helper.get_past_for_agent(
-            i_t,
-            s_t,
-            seconds=int(self.freq * self.t_h),
-            in_agent_frame=True,
-            just_xy=False,
-        )
+        hist, fut = self.upsample_track(i_t, s_t)
+        # print("hist shape", hist.shape)
+        # print("fut shape", fut.shape)
+        # exit()
 
         for k in range(len(hist)):
             motion_states[-(k + 2), 0] = self.helper.get_velocity_for_agent(

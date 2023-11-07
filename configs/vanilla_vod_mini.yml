@@ -1,6 +1,7 @@
 # Dataset and dataloader parameters
-dataset: 'nuScenes'
-version: 'v1.0-trainval'
+dataset: 'VOD'
+mode: "nuscenes"
+version: 'v1.0-mini'
 agent_setting: 'single_agent'
 input_representation: 'graphs'
 
@@ -10,34 +11,36 @@ define: &t_h 0.5
 define: &t_f 3
 
 train_set_args: &ds_args
-  split: 'train'
+  split: 'mini'
   t_h: *t_h 
   t_f: *t_f
   map_extent: [ -25, 25, -10, 40 ]
   polyline_resolution: 1
   polyline_length: 20
   traversal_horizon: 15
-  random_flips: True
+  #random_flips: True
+  random_flips: False
 
 val_set_args:
   <<: *ds_args
-  split: 'train_val'
+  split: 'mini'
   random_flips: False
 
 test_set_args:
   <<: *ds_args
-  split: 'val'
+  split: 'mini'
   random_flips: False
 
 batch_size: 32
-#num_workers: 12 
-num_workers: 0 
+#num_workers: 12
+num_workers: 5
 
 
 # Encoder parameters
 encoder_type: 'pgp_encoder'
 encoder_args:
   target_agent_feat_size: 5
+  #target_agent_feat_size: 9
   target_agent_emb_size: 16
   target_agent_enc_size: 32
   node_feat_size: 6
@@ -46,12 +49,14 @@ encoder_args:
   nbr_feat_size: 5
   nbr_emb_size: 16
   nbr_enc_size: 32
+  nbr_agent_types: 4 
   num_gat_layers: 2
 
 # Aggregator parameters
 aggregator_type: 'pgp'
 aggregator_args:
-  pre_train: False  # not used
+  pre_train: False # not usd
+  #pre_train: True
   target_agent_enc_size: 32
   node_enc_size: 32
   pi_h1_size: 32
@@ -66,7 +71,9 @@ aggregator_args:
 decoder_type: 'lvm'
 decoder_args:
   num_samples: 1000
-  op_len: 6
+  #op_len: 12
+  #op_len: 20
+  op_len: 30
   hidden_size: 128
   encoding_size: 160
   agg_type: 'sample_specific'
@@ -77,8 +84,11 @@ decoder_args:
 # Optimizer parameters
 optim_args:
   lr: 0.001
+  #lr: 0.0001
   scheduler_step: 10
+  #scheduler_step: 100000
   scheduler_gamma: 0.5
+  #scheduler_gamma: 1.
 
 
 losses: ['min_ade_k', 'pi_bc']
@@ -88,22 +98,25 @@ loss_args:
   - dummy: 0
 
 
-tr_metrics: ['min_ade_k', 'miss_rate_k', 'pi_bc']
+tr_metrics: ['min_ade_k', 'min_fde_k','miss_rate_k', 'pi_bc']
 tr_metric_args:
   - k: 10
   - k: 10
-    dist_thresh: 2
+  - k: 10
+    dist_thresh: 0.5
   - dummy: 0
 
-val_metrics: ['min_ade_k','min_ade_k', 'miss_rate_k', 'miss_rate_k', 'pi_bc']
+val_metrics: ['min_ade_k','min_ade_k', 'min_fde_k','min_fde_k', 'miss_rate_k', 'miss_rate_k', 'pi_bc']
 val_metric_args:
   - k: 5
   - k: 10
   - k: 5
-    dist_thresh: 2
   - k: 10
-    dist_thresh: 2
+  - k: 5
+    dist_thresh: 0.5
+  - k: 10
+    dist_thresh: 0.5
   - dummy: 0
 
 
-log_freq: 100
+log_freq: 10 

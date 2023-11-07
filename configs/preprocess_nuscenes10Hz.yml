@@ -1,4 +1,4 @@
-dataset: 'nuScenes'
+dataset: 'nuScenes10Hz'
 version: 'v1.0-trainval'
 #version: 'v1.0-mini'
 agent_setting: 'single_agent'

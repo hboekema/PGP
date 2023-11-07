@@ -1,8 +1,9 @@
 import abc
-import torch.utils.data as torch_data
-import numpy as np
-from typing import Union, Dict
 import os
+from typing import Dict, Union
+
+import numpy as np
+import torch.utils.data as torch_data
 
 
 class TrajectoryDataset(torch_data.Dataset):
@@ -16,11 +17,13 @@ class TrajectoryDataset(torch_data.Dataset):
         :param mode: Mode of operation of dataset
         :param data_dir: Directory to store extracted pre-processed data
         """
-        if mode not in ['compute_stats', 'extract_data', 'load_data']:
-            raise Exception('Dataset mode needs to be one of {compute_stats, extract_data or load_data}')
+        if mode not in ["compute_stats", "extract_data", "load_data"]:
+            raise Exception(
+                "Dataset mode needs to be one of {compute_stats, extract_data or load_data}"
+            )
         self.mode = mode
         self.data_dir = data_dir
-        if mode != 'load_data' and not os.path.isdir(self.data_dir):
+        if mode != "load_data" and not os.path.isdir(self.data_dir):
             os.mkdir(self.data_dir)
 
     @abc.abstractmethod
@@ -35,9 +38,9 @@ class TrajectoryDataset(torch_data.Dataset):
         Get data point, based on mode of operation of dataset.
         :param idx: data index
         """
-        if self.mode == 'compute_stats':
+        if self.mode == "compute_stats":
             return self.compute_stats(idx)
-        elif self.mode == 'extract_data':
+        elif self.mode == "extract_data":
             self.extract_data(idx)
             return 0
         else:
@@ -58,7 +61,7 @@ class TrajectoryDataset(torch_data.Dataset):
         """
         inputs = self.get_inputs(idx)
         ground_truth = self.get_ground_truth(idx)
-        data = {'inputs': inputs, 'ground_truth': ground_truth}
+        data = {"inputs": inputs, "ground_truth": ground_truth}
         self.save_data(idx, data)
 
     @abc.abstractmethod

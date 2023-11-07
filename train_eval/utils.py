@@ -1,8 +1,8 @@
-import torch.optim
 from typing import Dict, Union
-import torch
-import numpy as np
 
+import numpy as np
+import torch
+import torch.optim
 
 # Initialize device:
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

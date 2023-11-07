@@ -1,6 +1,8 @@
-dataset: 'nuScenes'
-version: 'v1.0-trainval'
-#version: 'v1.0-mini'
+dataset: 'VOD'
+#mode: 'vod'
+mode: 'nuscenes'
+#version: 'v1.0-trainval'
+version: 'v1.0-mini'
 agent_setting: 'single_agent'
 input_representation: 'graphs'
 
@@ -12,7 +14,7 @@ define: &t_f 3
 define: &map_extent [-25, 25, -10, 40]
 
 train_set_args:
-  split: 'train'
+  split: 'mini'
   t_h: *t_h
   t_f: *t_f
   map_extent: *map_extent 
@@ -21,7 +23,7 @@ train_set_args:
   traversal_horizon: 15
 
 val_set_args:
-  split: 'train_val'
+  split: 'mini'
   t_h: *t_h
   t_f: *t_f
   map_extent: *map_extent 
@@ -30,7 +32,7 @@ val_set_args:
   traversal_horizon: 15
 
 test_set_args:
-  split: 'val'
+  split: 'mini'
   t_h: *t_h
   t_f: *t_f
   map_extent: *map_extent 
@@ -39,5 +41,8 @@ test_set_args:
   traversal_horizon: 15
 
 batch_size: 32
-num_workers: 24
+#num_workers: 24
+num_workers: 20
+#num_workers: 12
+#num_workers: 0
 verbosity: True

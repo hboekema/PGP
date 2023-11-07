@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pack_padded_sequence
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class PGPEncoder(PredictionEncoder):
+class PGPCAEncoder(PredictionEncoder):
     def __init__(self, args: Dict):
         """
         GRU based encoder from PGP. Lane node features and agent histories encoded using GRUs.
@@ -37,7 +37,8 @@ class PGPEncoder(PredictionEncoder):
 
         # Target agent encoder
         self.target_agent_emb = nn.Linear(
-            args["target_agent_feat_size"], args["target_agent_emb_size"]
+            args["target_agent_feat_size"] + args["nbr_agent_types"],
+            args["target_agent_emb_size"],
         )
         self.target_agent_enc = nn.GRU(
             args["target_agent_emb_size"],
@@ -52,7 +53,9 @@ class PGPEncoder(PredictionEncoder):
         )
 
         # Surrounding agent encoder
-        self.nbr_emb = nn.Linear(args["nbr_feat_size"] + 1, args["nbr_emb_size"])
+        self.nbr_emb = nn.Linear(
+            args["nbr_feat_size"] + args["nbr_agent_types"], args["nbr_emb_size"]
+        )
         self.nbr_enc = nn.GRU(
             args["nbr_emb_size"], args["nbr_enc_size"], batch_first=True
         )
@@ -75,6 +78,13 @@ class PGPEncoder(PredictionEncoder):
             ]
         )
 
+        self.class_encodings = {
+            "human.pedestrian.adult": 0,
+            "vehicle.bicycle": 1,
+            "vehicle.car": 2,
+            "vehicle.motorcycle": 3,
+        }
+
     def forward(self, inputs: Dict) -> Dict:
         """
         Forward pass for PGP encoder
@@ -89,13 +99,10 @@ class PGPEncoder(PredictionEncoder):
                 'edge_type': Look-up table with edge type
 
             surrounding_agent_representation: Dict with
-                'vehicles': torch.Tensor, shape [batch_size, max_vehicles, t_h, nbr_feat_size]
-                'vehicle_masks': torch.Tensor, shape [batch_size, max_vehicles, t_h, nbr_feat_size]
-                'pedestrians': torch.Tensor, shape [batch_size, max_peds, t_h, nbr_feat_size]
-                'pedestrian_masks': torch.Tensor, shape [batch_size, max_peds, t_h, nbr_feat_size]
+                agents: torch.Tensor, shape [batch_size, max_vehicles, t_h, nbr_feat_size]
+                agent_masks: torch.Tensor, shape [batch_size, max_vehicles, t_h, nbr_feat_size]
             agent_node_masks:  Dict with
-                'vehicles': torch.Tensor, shape [batch_size, max_nodes, max_vehicles]
-                'pedestrians': torch.Tensor, shape [batch_size, max_nodes, max_pedestrians]
+                agents: torch.Tensor, shape [batch_size, max_nodes, max_vehicles]
 
             Optionally may also include the following if edges are defined for graph traversal
             'init_node': Initial node in the lane graph based on track history.
@@ -103,6 +110,12 @@ class PGPEncoder(PredictionEncoder):
 
         :return:
         """
+        agent_types = [
+            name
+            for name in inputs["surrounding_agent_representation"].keys()
+            if "masks" not in name
+        ]
+        num_agent_types = len(agent_types)
 
         # Encode target agent
         target_agent_feats = inputs["target_agent_representation"]
@@ -121,42 +134,39 @@ class PGPEncoder(PredictionEncoder):
         )
 
         # Encode surrounding agents
-        nbr_vehicle_feats = inputs["surrounding_agent_representation"]["vehicles"]
-        nbr_vehicle_feats = torch.cat(
-            (nbr_vehicle_feats, torch.zeros_like(nbr_vehicle_feats[:, :, :, 0:1])),
-            dim=-1,
-        )
-        nbr_vehicle_masks = inputs["surrounding_agent_representation"]["vehicle_masks"]
-        nbr_vehicle_embedding = self.leaky_relu(self.nbr_emb(nbr_vehicle_feats))
-        nbr_vehicle_enc = self.variable_size_gru_encode(
-            nbr_vehicle_embedding, nbr_vehicle_masks, self.nbr_enc
-        )
-        nbr_ped_feats = inputs["surrounding_agent_representation"]["pedestrians"]
-        nbr_ped_feats = torch.cat(
-            (nbr_ped_feats, torch.ones_like(nbr_ped_feats[:, :, :, 0:1])), dim=-1
-        )
-        nbr_ped_masks = inputs["surrounding_agent_representation"]["pedestrian_masks"]
-        nbr_ped_embedding = self.leaky_relu(self.nbr_emb(nbr_ped_feats))
-        nbr_ped_enc = self.variable_size_gru_encode(
-            nbr_ped_embedding, nbr_ped_masks, self.nbr_enc
-        )
+        nbr_agent_encs = []
+        for i, agent_type in enumerate(agent_types):
+            nbr_agent_feats = inputs["surrounding_agent_representation"][agent_type]
+            class_enc = torch.zeros_like(nbr_agent_feats[:, :, :, 0:num_agent_types])
+
+            if agent_type == "vehicle.ego":
+                agent_type = "vehicle.car"
+
+            class_idx = self.class_encodings[agent_type]
+            class_enc[..., class_idx] = 1
+
+            nbr_agent_feats = torch.cat(
+                (nbr_agent_feats, class_enc),
+                dim=-1,
+            )
+            nbr_agent_masks = inputs["surrounding_agent_representation"][
+                agent_type + "_masks"
+            ]
+            nbr_agent_embedding = self.leaky_relu(self.nbr_emb(nbr_agent_feats))
+            nbr_agent_enc = self.variable_size_gru_encode(
+                nbr_agent_embedding, nbr_agent_masks, self.nbr_enc
+            )
+            nbr_agent_encs.append(nbr_agent_enc)
 
         # Agent-node attention
-        nbr_encodings = torch.cat((nbr_vehicle_enc, nbr_ped_enc), dim=1)
+        nbr_encodings = torch.cat(nbr_agent_encs, dim=1)
         queries = self.query_emb(lane_node_enc).permute(1, 0, 2)
         keys = self.key_emb(nbr_encodings).permute(1, 0, 2)
         vals = self.val_emb(nbr_encodings).permute(1, 0, 2)
-        # print(inputs["agent_node_masks"]["vehicles"].shape)
-        # print(inputs["agent_node_masks"]["pedestrians"].shape)
-        # exit()
         attn_masks = torch.cat(
-            (
-                inputs["agent_node_masks"]["vehicles"],
-                inputs["agent_node_masks"]["pedestrians"],
-            ),
+            [inputs["agent_node_masks"][agent_type] for agent_type in agent_types],
             dim=2,
         )
-        # print(queries.shape, keys.shape, vals.shape, attn_masks.shape)
         att_op, _ = self.a_n_att(queries, keys, vals, attn_mask=attn_masks)
         att_op = att_op.permute(1, 0, 2)
 
@@ -186,13 +196,16 @@ class PGPEncoder(PredictionEncoder):
                 "combined": lane_node_enc,
                 "combined_masks": lane_node_masks,
                 "map": None,
-                "vehicles": None,
-                "pedestrians": None,
-                "map_masks": None,
-                "vehicle_masks": None,
-                "pedestrian_masks": None,
+                # "vehicles": None,
+                # "pedestrians": None,
+                # "map_masks": None,
+                # "vehicle_masks": None,
+                # "pedestrian_masks": None,
             },
         }
+
+        if "class_encoding" in inputs.keys():
+            encodings["class_encoding"] = inputs["class_encoding"]
 
         # Pass on initial nodes and edge structure to aggregator if included in inputs
         if "init_node" in inputs:
